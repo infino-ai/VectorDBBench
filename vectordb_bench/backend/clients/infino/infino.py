@@ -67,7 +67,11 @@ class Infino(VectorDB):
         self.table_name = collection_name
         self.with_scalar_labels = with_scalar_labels
         self._is_fts = isinstance(db_case_config, InfinoFTSConfig)
-        if not self._is_fts:
+        if self._is_fts:
+            # Tokenizer chosen to match the GT analyzer (set by
+            # apply_fts_manifest); defaults to the ASCII tokenizer.
+            self._analyzer = db_case_config.analyzer
+        else:
             index_param = db_case_config.index_param()
             self.metric = index_param["metric"]
             self.n_cent = index_param["n_cent"]
@@ -109,7 +113,7 @@ class Infino(VectorDB):
 
     def _index_spec(self) -> infino.IndexSpec:
         if self._is_fts:
-            return infino.IndexSpec().fts(_TEXT_FIELD)
+            return infino.IndexSpec().fts(_TEXT_FIELD, analyzer=self._analyzer)
         return infino.IndexSpec().vector(_VECTOR_FIELD, self.dim, self.n_cent, self.metric)
 
     @classmethod
