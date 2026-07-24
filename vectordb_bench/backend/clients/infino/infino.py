@@ -204,7 +204,13 @@ class Infino(VectorDB):
 
     def optimize(self, data_size: int | None = None):
         with self.init():
-            self._table.optimize()
+            if self._is_fts:
+                # Merge all superfiles into one so BM25 statistics (df,
+                # n_docs, avgdl) are global rather than per-superfile —
+                # per-superfile stats otherwise cap recall.
+                self._table.optimize(infino.OptimizeOptions(force_single=True))
+            else:
+                self._table.optimize()
 
     def need_normalize_cosine(self) -> bool:
         return True
