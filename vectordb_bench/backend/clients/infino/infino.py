@@ -61,6 +61,8 @@ class Infino(VectorDB):
             # Tokenizer chosen to match the GT analyzer (set by
             # apply_fts_manifest); defaults to the ASCII tokenizer.
             self._analyzer = db_case_config.analyzer
+            # BM25 corpus-statistics mode passed to each query.
+            self._bm25_stats = db_case_config.bm25_stats
         else:
             index_param = db_case_config.index_param()
             search_param = db_case_config.search_param()
@@ -170,7 +172,9 @@ class Infino(VectorDB):
         return len(doc_ids), None
 
     def search_documents(self, query: str, k: int = 100, **kwargs) -> list[str]:
-        hits = self._table.bm25_search(_TEXT_FIELD, query, k, projection=[_DOC_ID_FIELD])
+        hits = self._table.bm25_search(
+            _TEXT_FIELD, query, k, projection=[_DOC_ID_FIELD], stats=self._bm25_stats
+        )
         return hits.column(_DOC_ID_FIELD).to_pylist()
 
     def optimize(self, data_size: int | None = None):

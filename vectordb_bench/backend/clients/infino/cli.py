@@ -78,6 +78,16 @@ class InfinoFTSTypedDict(InfinoCommonTypedDict):
         str,
         click.option("--table-name", type=str, default="vdbbench_infino_fts", help="Infino table name"),
     ]
+    bm25_stats: Annotated[
+        str,
+        click.option(
+            "--bm25-stats",
+            type=click.Choice(["per_superfile", "global"]),
+            default="global",
+            help="BM25 corpus statistics at query time: per_superfile (segment-local) or "
+            "global (table-wide idf across segments; matches the GT's global stats)",
+        ),
+    ]
 
 
 @cli.command()
@@ -117,6 +127,6 @@ def InfinoFTS(**parameters: Unpack[InfinoFTSTypedDict]):
             cache_dir=parameters["cache_dir"],
             storage_options=parameters["storage_options"] or None,
         ),
-        db_case_config=InfinoFTSConfig(),
+        db_case_config=InfinoFTSConfig(bm25_stats=parameters["bm25_stats"]),
         **parameters,
     )

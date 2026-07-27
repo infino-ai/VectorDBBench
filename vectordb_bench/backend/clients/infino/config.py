@@ -74,6 +74,12 @@ class InfinoFTSConfig(BaseModel, DBCaseConfig):
     # Infino tokenizer to build + query the text column with. Set from the
     # GT manifest by `apply_fts_manifest`; defaults to the ASCII tokenizer.
     analyzer: str = "ascii_lower"
+    # BM25 corpus statistics used at query time: "per_superfile" (each
+    # segment scored against its own local stats) or "global" (one
+    # table-wide idf across all segments, so a fragmented table ranks like
+    # a single corpus). Defaults to "global" — matching the GT, which uses
+    # global corpus statistics.
+    bm25_stats: str = "global"
 
     def index_param(self) -> dict:
         return {}
@@ -105,4 +111,7 @@ class InfinoFTSConfig(BaseModel, DBCaseConfig):
             "unapplied_bm25_params": {k: v for k, v in bm25_params.items() if k not in applied},
             "applied_analyzer_params": applied_analyzer,
             "unapplied_analyzer_params": unapplied_analyzer,
+            # Surface the query-time statistics mode so the result JSON records
+            # whether the run scored with per-superfile or global BM25 stats.
+            "bm25_stats": self.bm25_stats,
         }
