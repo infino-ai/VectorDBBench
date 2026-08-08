@@ -1,9 +1,12 @@
 import logging
+import os
+import tempfile
 from collections.abc import Iterable
 from contextlib import contextmanager
 from pathlib import Path
 
 import infino
+import numpy as np
 import pyarrow as pa
 
 from ..api import VectorDB
@@ -29,6 +32,19 @@ class Infino(VectorDB):
 
     # Serialize the load: concurrent writes to a single table are not supported.
     thread_safe: bool = False
+
+    # Take the loader's raw 2-D float32 array instead of a list-of-lists; see
+    # _vector_array() for the ~8x memory difference this avoids per shard.
+    accepts_ndarray_embeddings: bool = True
+
+    # Run the concurrency ladder as N threads over ONE shared connection
+    # (ThreadedSearchRunner) instead of N spawned processes: Infino is an
+    # embedded engine, so process-per-worker multiplies whole engines
+    # (~2 GB anon RSS each after one query, ~13 GB of pages touched per
+    # first query — the stock ladder OOM-killed a 62 GB host at conc≈30
+    # on Cohere-10M). Searches are read-only over immutable snapshots, so
+    # a shared connection is thread-safe.
+    in_process_concurrency: bool = True
 
     # NonFilter only (base default): Infino's native filtered ANN is an FTS-token
     # pre-filter that can't express the harness's scalar equality / range filters.
@@ -71,10 +87,10 @@ class Infino(VectorDB):
 
         self._conn = None
         self._table = None
-        # Engine _id -> caller id, built once per process on first search:
-        # search returns the engine-native stable _id for free, while
-        # projecting the id column costs a per-query scalar resolve.
-        self._id_map = None
+        # _id -> dataset-id arrays; None until built (init() skips the build
+        # when the table is empty — the load-phase open) and after unpickling.
+        self._map_keys = None
+        self._map_vals = None
         # Build the schema once so table creation and every append stay in lockstep.
         self._schema = self._build_schema()
 
@@ -90,7 +106,7 @@ class Infino(VectorDB):
 
     def __getstate__(self) -> dict:
         # Drop the non-picklable live connection so the instance can cross a process boundary.
-        return {**self.__dict__, "_conn": None, "_table": None, "_id_map": None}
+        return {**self.__dict__, "_conn": None, "_table": None, "_map_keys": None, "_map_vals": None}
 
     def _build_schema(self) -> pa.Schema:
         if self._is_fts:
@@ -122,11 +138,111 @@ class Infino(VectorDB):
             conn = self._connect()
             self._table = conn.open_table(self.table_name)
             self._conn = conn  # assign last so a failed open leaves a clean state to retry
+            if not self._is_fts:
+                self._load_or_build_id_map()
         yield
+
+    # _id -> dataset-id translation, the same build-once / persist / reload
+    # pattern the engine's own bench uses for its ground-truth bin: one scan
+    # per TABLE (not per process), stored beside the catalog, reloaded by
+    # every worker in well under a second. _ids are 128-bit decimals, so the
+    # sorted key array is 16-byte big-endian bytes (lexicographic == numeric).
+    #
+    # The build lives in init() ON PURPOSE: init() runs before the timed
+    # search loops, so the scan/reload never lands inside a measured query.
+    # Two guards keep that placement safe: an empty table (the loader opens
+    # the connection before inserting a single row) builds and persists
+    # NOTHING, and a cached map is only trusted if its row count matches the
+    # table — otherwise it is rebuilt in place.
+    def _id_map_path(self) -> Path:
+        return Path(self.data_path) / f"{self.table_name}.idmap.npz"
+
+    def _table_row_count(self) -> int:
+        res = self._conn.query_sql(f"SELECT COUNT(*) FROM {self.table_name}")
+        return int(res.column(0).to_pylist()[0])
+
+    def _load_or_build_id_map(self) -> None:
+        n_rows = self._table_row_count()
+        if n_rows == 0:
+            # Load-phase init(): drop_old has just recreated the table and no
+            # rows exist yet. Persisting an empty map here would poison every
+            # later search process (the cache is trusted once written).
+            return
+        path = self._id_map_path()
+        if path.exists():
+            data = np.load(path)
+            if len(data["keys"]) == n_rows:
+                self._map_keys, self._map_vals = data["keys"], data["vals"]
+                return
+            # Row count mismatch: the cache belongs to a previous incarnation
+            # of the table (dropped and reloaded at a different size). Fall
+            # through and rebuild; os.replace keeps concurrent rebuilds safe.
+        m = self._conn.query_sql(f"SELECT _id, {_ID_FIELD} FROM {self.table_name}")
+        keys = np.array(
+            [int(v).to_bytes(16, "big") for v in m.column("_id").to_pylist()],
+            dtype="S16",
+        )
+        vals = np.array(m.column(_ID_FIELD).to_pylist(), dtype=np.int64)
+        order = np.argsort(keys)
+        keys, vals = keys[order], vals[order]
+        # Suffix must end in .npz or np.savez appends it and orphans the file.
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp.npz")
+        os.close(fd)
+        np.savez(tmp, keys=keys, vals=vals)
+        os.replace(tmp, path)
+        self._map_keys, self._map_vals = keys, vals
+
+    def _to_dataset_ids(self, stable_ids: list) -> list[int]:
+        if not stable_ids:
+            return []
+        if self._map_keys is None:
+            # Only reachable in a process that opened the connection while the
+            # table was still empty (load) and then searched (read-write
+            # cases). Ordinary search processes built the map in init().
+            self._load_or_build_id_map()
+        if self._map_keys is None:
+            raise RuntimeError(
+                f"table {self.table_name!r} has no rows to map; the load stage "
+                "did not run (or wrote nothing) before search"
+            )
+        q = np.array([int(v).to_bytes(16, "big") for v in stable_ids], dtype="S16")
+        n = len(self._map_keys)
+        idx = np.searchsorted(self._map_keys, q)
+        # Every returned _id must be a key we mapped; a miss means the cached
+        # map belongs to a different table state — fail loudly, wrong ids
+        # here silently corrupt recall.
+        if (idx >= n).any() or (self._map_keys[idx.clip(max=n - 1)] != q).any():
+            raise RuntimeError(
+                f"search returned _ids absent from the id map for {self.table_name!r}; "
+                f"stale cache at {self._id_map_path()} — delete it and rerun"
+            )
+        return self._map_vals[idx].tolist()
+
+    def _vector_array(self, embeddings: Iterable[list[float]] | np.ndarray) -> pa.Array:
+        """Build the fixed-size-list vector column for one insert batch.
+
+        A 2-D float32 ``ndarray`` is wrapped around its existing buffer: Arrow
+        reads the flat values and the fixed list size supplies the row shape,
+        so a shard costs its raw bytes (1M x 768 -> 3.1 GB) and nothing more.
+        The list-of-lists the caller would otherwise materialize costs ~32
+        bytes per float — a 24-byte Python float object plus an 8-byte
+        pointer — i.e. 24.6 GB for that same shard. Several loader workers
+        each holding one is what OOM-killed this box (kernel logged 24.9 GB
+        of virtual memory per worker against 62 GB of RAM and no swap).
+
+        Anything else (plain lists, generators) takes the general Arrow
+        conversion, so non-ndarray callers are unaffected.
+        """
+        if isinstance(embeddings, np.ndarray) and embeddings.ndim == 2:
+            flat = np.ascontiguousarray(embeddings, dtype=np.float32).reshape(-1)
+            return pa.FixedSizeListArray.from_arrays(
+                pa.array(flat, type=pa.float32()), self.dim
+            )
+        return pa.array(embeddings, type=pa.list_(pa.float32(), self.dim))
 
     def insert_embeddings(
         self,
-        embeddings: Iterable[list[float]],
+        embeddings: Iterable[list[float]] | np.ndarray,
         metadata: list[int],
         labels_data: list[str] | None = None,
         **kwargs,
@@ -135,26 +251,17 @@ class Infino(VectorDB):
             arrays = [pa.array(metadata, type=pa.int64())]
             if self.with_scalar_labels:
                 arrays.append(pa.array(labels_data, type=pa.large_utf8()))
-            arrays.append(pa.array(embeddings, type=pa.list_(pa.float32(), self.dim)))
+            arrays.append(self._vector_array(embeddings))
             self._table.append(pa.record_batch(arrays, schema=self._schema))
         except Exception as e:
             log.exception("Failed to insert embeddings into Infino")
             return 0, e
         return len(metadata), None
 
-    def _ensure_id_map(self) -> dict:
-        if self._id_map is None:
-            m = self._conn.query_sql(f"SELECT _id, {_ID_FIELD} FROM {self.table_name}")
-            self._id_map = dict(
-                zip(m.column("_id").to_pylist(), m.column(_ID_FIELD).to_pylist())
-            )
-        return self._id_map
-
     def search_embedding(self, query: list[float], k: int = 100, **kwargs) -> list[int]:
         # Vector serving is engine-decided; the call carries no tuning kwargs.
-        id_map = self._ensure_id_map()
         hits = self._table.vector_search(_VECTOR_FIELD, query, k)
-        return [id_map[h] for h in hits.column("_id").to_pylist()]
+        return self._to_dataset_ids(hits.column("_id").to_pylist())
 
     def insert_documents(
         self,
