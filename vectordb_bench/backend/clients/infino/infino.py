@@ -213,7 +213,7 @@ class Infino(VectorDB):
         fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp.npz")
         os.close(fd)
         np.savez(tmp, keys=keys, vals=vals)
-        os.replace(tmp, path)
+        Path(tmp).replace(path)
         self._map_keys, self._map_vals = keys, vals
 
     def _to_dataset_ids(self, stable_ids: list) -> list[int]:
@@ -261,9 +261,7 @@ class Infino(VectorDB):
         """
         if isinstance(embeddings, np.ndarray) and embeddings.ndim == 2:
             flat = np.ascontiguousarray(embeddings, dtype=np.float32).reshape(-1)
-            return pa.FixedSizeListArray.from_arrays(
-                pa.array(flat, type=pa.float32()), self.dim
-            )
+            return pa.FixedSizeListArray.from_arrays(pa.array(flat, type=pa.float32()), self.dim)
         return pa.array(embeddings, type=pa.list_(pa.float32(), self.dim))
 
     def insert_embeddings(
