@@ -1,6 +1,14 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from vectordb_bench.backend.clients.api import DBCaseConfig, DBConfig, MetricType
+
+# Vector serving path, bridged to the engine's `vector.search_mode` config key
+# by the client before connect (see infino.py) — deliberately a config override,
+# not a public engine-API field, so nothing goes vestigial if the engine default
+# changes later. "ivf" (default) serves the reclaimable IVF scan; "hnsw_ivf"
+# builds + serves a resident HNSW graph over the Sq16 vectors (automatic ivf
+# fallback).
+_SEARCH_MODES = ("ivf", "hnsw_ivf")
 
 # Infino distance metrics; all are distances where smaller means nearer.
 _METRIC_MAP = {
@@ -34,9 +42,18 @@ class InfinoConfig(DBConfig):
 
 class InfinoIndexConfig(BaseModel, DBCaseConfig):
     metric_type: MetricType | None = None
-    # Vector serving (probe width and rerank budget) is engine-decided —
-    # calibrated per table at optimize time. The published binding carries
-    # no tuning kwargs, so the client has nothing to forward.
+    # Probe width and rerank budget stay engine-decided (calibrated per table at
+    # optimize time); only the serving-path selector is forwarded, and it goes
+    # through the engine config file, not IndexSpec (see _SEARCH_MODES above).
+    search_mode: str = "ivf"
+
+    @field_validator("search_mode")
+    @classmethod
+    def _validate_search_mode(cls, v: str) -> str:
+        if v not in _SEARCH_MODES:
+            msg = f"Infino search_mode must be one of {_SEARCH_MODES}, got {v!r}"
+            raise ValueError(msg)
+        return v
 
     def parse_metric(self) -> str:
         if self.metric_type not in _METRIC_MAP:

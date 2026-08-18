@@ -78,12 +78,16 @@ class Infino(VectorDB):
         self._is_fts = isinstance(db_case_config, InfinoFTSConfig)
         # Vector-only params; left None for FTS runs, which never call search_embedding.
         self.metric = None
+        # Vector serving path, bridged to the engine config before connect
+        # (see _apply_search_mode_config); None for FTS runs.
+        self._search_mode = None
         if self._is_fts:
             # Tokenizer chosen to match the GT analyzer (set by
             # apply_fts_manifest); defaults to the ASCII tokenizer.
             self._analyzer = db_case_config.analyzer
         else:
             self.metric = db_case_config.index_param()["metric"]
+            self._search_mode = db_case_config.search_mode
 
         self._conn = None
         self._table = None
@@ -101,7 +105,27 @@ class Infino(VectorDB):
         if self.table_name not in conn.list_tables():
             conn.create_table(self.table_name, self._schema, self._index_spec())
 
+    def _apply_search_mode_config(self):
+        """Bridge ``search_mode`` to the engine's YAML config before connect.
+
+        The engine selects the vector serving path from ``vector.search_mode`` in
+        its config file, loaded once per process from
+        ``$XDG_CONFIG_HOME/infino/config.yaml``. We write it here — not through
+        ``IndexSpec`` — to keep the engine's public API untouched. ``ivf`` is the
+        engine default, so only non-default modes write anything; default runs
+        are byte-for-byte unchanged. Idempotent, and re-applied in each spawned
+        worker before its first connect.
+        """
+        mode = self._search_mode
+        if not mode or mode == "ivf":
+            return
+        cfg_root = Path(self.data_path) / "_infino_engine_cfg"
+        (cfg_root / "infino").mkdir(parents=True, exist_ok=True)
+        (cfg_root / "infino" / "config.yaml").write_text(f"vector:\n  search_mode: {mode}\n")
+        os.environ["XDG_CONFIG_HOME"] = str(cfg_root)
+
     def _connect(self):
+        self._apply_search_mode_config()
         return infino.connect(self.data_path, **self._connect_opts)
 
     def __getstate__(self) -> dict:
@@ -201,10 +225,11 @@ class Infino(VectorDB):
             # cases). Ordinary search processes built the map in init().
             self._load_or_build_id_map()
         if self._map_keys is None:
-            raise RuntimeError(
+            msg = (
                 f"table {self.table_name!r} has no rows to map; the load stage "
                 "did not run (or wrote nothing) before search"
             )
+            raise RuntimeError(msg)
         q = np.array([int(v).to_bytes(16, "big") for v in stable_ids], dtype="S16")
         n = len(self._map_keys)
         idx = np.searchsorted(self._map_keys, q)
@@ -212,10 +237,11 @@ class Infino(VectorDB):
         # map belongs to a different table state — fail loudly, wrong ids
         # here silently corrupt recall.
         if (idx >= n).any() or (self._map_keys[idx.clip(max=n - 1)] != q).any():
-            raise RuntimeError(
+            msg = (
                 f"search returned _ids absent from the id map for {self.table_name!r}; "
                 f"stale cache at {self._id_map_path()} — delete it and rerun"
             )
+            raise RuntimeError(msg)
         return self._map_vals[idx].tolist()
 
     def _vector_array(self, embeddings: Iterable[list[float]] | np.ndarray) -> pa.Array:

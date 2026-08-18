@@ -1,6 +1,7 @@
 import tempfile
 
 import numpy as np
+import pytest
 
 from vectordb_bench.backend.clients import DB
 from vectordb_bench.backend.clients.api import IndexType, MetricType
@@ -14,6 +15,17 @@ class TestInfino:
         # FTS index_type must yield the FTS config, everything else the vector config.
         assert DB.Infino.case_config_cls(IndexType.FTS) is InfinoFTSConfig
         assert DB.Infino.case_config_cls() is InfinoIndexConfig
+
+    def test_search_mode_config(self):
+        # Default is the reclaimable ivf path; hnsw_ivf is opt-in; bad values reject.
+        # search_mode is bridged to the engine config file, so it must NOT leak
+        # into index_param() (which feeds IndexSpec).
+        assert InfinoIndexConfig().search_mode == "ivf"
+        cfg = InfinoIndexConfig(metric_type=MetricType.COSINE, search_mode="hnsw_ivf")
+        assert cfg.search_mode == "hnsw_ivf"
+        assert "search_mode" not in cfg.index_param()
+        with pytest.raises(ValueError, match="search_mode"):
+            InfinoIndexConfig(search_mode="bogus")
 
     def test_insert_and_search(self):
         assert DB.Infino.value == "Infino"

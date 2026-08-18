@@ -63,6 +63,16 @@ class InfinoTypedDict(InfinoCommonTypedDict):
         str,
         click.option("--table-name", type=str, default="vdbbench_infino", help="Infino table name"),
     ]
+    search_mode: Annotated[
+        str,
+        click.option(
+            "--search-mode",
+            type=click.Choice(["ivf", "hnsw_ivf"]),
+            default="ivf",
+            help="Vector serving path, bridged to the engine config: "
+            "ivf (default) or hnsw_ivf (resident HNSW graph with ivf fallback)",
+        ),
+    ]
 
 
 class InfinoFTSTypedDict(InfinoCommonTypedDict):
@@ -86,7 +96,7 @@ def Infino(**parameters: Unpack[InfinoTypedDict]):
             cache_dir=parameters["cache_dir"],
             storage_options=parameters["storage_options"] or None,
         ),
-        db_case_config=InfinoIndexConfig(),
+        db_case_config=InfinoIndexConfig(search_mode=parameters["search_mode"]),
         **parameters,
     )
 
