@@ -78,9 +78,10 @@ class Infino(VectorDB):
         self._is_fts = isinstance(db_case_config, InfinoFTSConfig)
         # Vector-only params; left None for FTS runs, which never call search_embedding.
         self.metric = None
-        # Vector serving path, bridged to the engine config before connect
-        # (see _apply_search_mode_config); None for FTS runs.
+        # Vector serving path + serve-time beam, bridged to the engine config
+        # before connect (see _apply_search_mode_config); unused for FTS runs.
         self._search_mode = None
+        self._ef = 0
         if self._is_fts:
             # Tokenizer chosen to match the GT analyzer (set by
             # apply_fts_manifest); defaults to the ASCII tokenizer.
@@ -88,6 +89,7 @@ class Infino(VectorDB):
         else:
             self.metric = db_case_config.index_param()["metric"]
             self._search_mode = db_case_config.search_mode
+            self._ef = db_case_config.ef
 
         self._conn = None
         self._table = None
@@ -106,22 +108,30 @@ class Infino(VectorDB):
             conn.create_table(self.table_name, self._schema, self._index_spec())
 
     def _apply_search_mode_config(self):
-        """Bridge ``search_mode`` to the engine's YAML config before connect.
+        """Bridge ``search_mode`` and the serve-time beam to the engine's YAML config.
 
-        The engine selects the vector serving path from ``vector.search_mode`` in
+        The engine reads ``vector.search_mode`` and ``vector.hnsw_ef_search`` from
         its config file, loaded once per process from
-        ``$XDG_CONFIG_HOME/infino/config.yaml``. We write it here — not through
-        ``IndexSpec`` — to keep the engine's public API untouched. ``ivf`` is the
-        engine default, so only non-default modes write anything; default runs
-        are byte-for-byte unchanged. Idempotent, and re-applied in each spawned
+        ``$XDG_CONFIG_HOME/infino/config.yaml``. We write them here — not through
+        ``IndexSpec`` — to keep the engine's public API untouched. The engine
+        default is ``ivf`` with the stamped k->ef curve (``hnsw_ef_search = 0``),
+        so only values that diverge from that are written; a pure-default run is
+        byte-for-byte unchanged. Idempotent, and re-applied in each spawned
         worker before its first connect.
         """
         mode = self._search_mode
-        if not mode or mode == "ivf":
+        ef = self._ef or 0
+        write_mode = bool(mode) and mode != "ivf"
+        if not write_mode and ef <= 0:
             return
+        lines = ["vector:"]
+        if write_mode:
+            lines.append(f"  search_mode: {mode}")
+        if ef > 0:
+            lines.append(f"  hnsw_ef_search: {ef}")
         cfg_root = Path(self.data_path) / "_infino_engine_cfg"
         (cfg_root / "infino").mkdir(parents=True, exist_ok=True)
-        (cfg_root / "infino" / "config.yaml").write_text(f"vector:\n  search_mode: {mode}\n")
+        (cfg_root / "infino" / "config.yaml").write_text("\n".join(lines) + "\n")
         os.environ["XDG_CONFIG_HOME"] = str(cfg_root)
 
     def _connect(self):

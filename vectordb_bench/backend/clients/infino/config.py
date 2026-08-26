@@ -45,13 +45,29 @@ class InfinoIndexConfig(BaseModel, DBCaseConfig):
     # Probe width and rerank budget stay engine-decided (calibrated per table at
     # optimize time); only the serving-path selector is forwarded, and it goes
     # through the engine config file, not IndexSpec (see _SEARCH_MODES above).
-    search_mode: str = "ivf"
+    # Default hnsw_ivf: the resident-HNSW path is what this client benchmarks.
+    search_mode: str = "hnsw_ivf"
+    # Serve-time HNSW beam for search_mode=hnsw_ivf, bridged to the engine's
+    # vector.hnsw_ef_search config key (see infino.py). 0 (default) serves each
+    # query at the graph's stamped k->ef curve; a positive value overrides it
+    # with a fixed beam, so sweeping ef across runs traces the recall/latency
+    # curve of ONE built graph with no rebuild — the direct analog of how the
+    # curated leaderboard sweeps ZillizCloud's per-run `level`.
+    ef: int = 0
 
     @field_validator("search_mode")
     @classmethod
     def _validate_search_mode(cls, v: str) -> str:
         if v not in _SEARCH_MODES:
             msg = f"Infino search_mode must be one of {_SEARCH_MODES}, got {v!r}"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("ef")
+    @classmethod
+    def _validate_ef(cls, v: int) -> int:
+        if v < 0:
+            msg = f"Infino ef must be >= 0 (0 = use the stamped curve), got {v}"
             raise ValueError(msg)
         return v
 
