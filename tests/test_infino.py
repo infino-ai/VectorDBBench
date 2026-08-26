@@ -17,15 +17,53 @@ class TestInfino:
         assert DB.Infino.case_config_cls() is InfinoIndexConfig
 
     def test_search_mode_config(self):
-        # Default is the reclaimable ivf path; hnsw_ivf is opt-in; bad values reject.
+        # Default is the resident-HNSW path; ivf is opt-out; bad values reject.
         # search_mode is bridged to the engine config file, so it must NOT leak
         # into index_param() (which feeds IndexSpec).
-        assert InfinoIndexConfig().search_mode == "ivf"
-        cfg = InfinoIndexConfig(metric_type=MetricType.COSINE, search_mode="hnsw_ivf")
-        assert cfg.search_mode == "hnsw_ivf"
+        assert InfinoIndexConfig().search_mode == "hnsw_ivf"
+        cfg = InfinoIndexConfig(metric_type=MetricType.COSINE, search_mode="ivf")
+        assert cfg.search_mode == "ivf"
         assert "search_mode" not in cfg.index_param()
         with pytest.raises(ValueError, match="search_mode"):
             InfinoIndexConfig(search_mode="bogus")
+
+    def test_ef_case_config(self):
+        # ef defaults to 0 (serve at the graph's stamped k->ef curve); a positive
+        # value is a fixed serve-time beam; negative is rejected. Like search_mode
+        # it is bridged to the engine config, not index_param().
+        assert InfinoIndexConfig().ef == 0
+        assert InfinoIndexConfig(ef=768).ef == 768
+        assert "ef" not in InfinoIndexConfig(ef=768).index_param()
+        with pytest.raises(ValueError, match="ef"):
+            InfinoIndexConfig(ef=-1)
+
+    def test_ef_search_config_bridging(self, tmp_path):
+        # search_mode + ef are bridged to the engine's YAML config; only values
+        # that diverge from the engine default (ivf + stamped curve) are written.
+        pytest.importorskip("infino")
+        from vectordb_bench.backend.clients.infino.infino import Infino
+
+        cfg_path = tmp_path / "_infino_engine_cfg" / "infino" / "config.yaml"
+
+        def written(search_mode: str, ef: int) -> str:
+            client = object.__new__(Infino)  # bypass __init__: no engine connect
+            client._search_mode = search_mode
+            client._ef = ef
+            client.data_path = str(tmp_path)
+            if cfg_path.exists():
+                cfg_path.unlink()
+            client._apply_search_mode_config()
+            return cfg_path.read_text() if cfg_path.exists() else ""
+
+        both = written("hnsw_ivf", 768)
+        assert "search_mode: hnsw_ivf" in both
+        assert "hnsw_ef_search: 768" in both
+
+        curve = written("hnsw_ivf", 0)
+        assert "search_mode: hnsw_ivf" in curve
+        assert "hnsw_ef_search" not in curve
+
+        assert written("ivf", 0) == ""  # pure engine default: nothing written
 
     def test_insert_and_search(self):
         assert DB.Infino.value == "Infino"
