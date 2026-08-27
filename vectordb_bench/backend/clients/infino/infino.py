@@ -102,8 +102,13 @@ class Infino(VectorDB):
 
         Path(self.data_path).mkdir(parents=True, exist_ok=True)
         conn = self._connect()
-        if drop_old and self.table_name in conn.list_tables():
-            conn.drop_table(self.table_name, purge=True)
+        if drop_old:
+            # A drop invalidates the persisted _id map: a fresh ingest reassigns
+            # engine _ids, so the map (trusted whenever its row count matches)
+            # would be wrongly reused after re-ingesting the same number of rows.
+            self._id_map_path().unlink(missing_ok=True)
+            if self.table_name in conn.list_tables():
+                conn.drop_table(self.table_name, purge=True)
         if self.table_name not in conn.list_tables():
             conn.create_table(self.table_name, self._schema, self._index_spec())
 
