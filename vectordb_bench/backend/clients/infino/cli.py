@@ -68,9 +68,21 @@ class InfinoTypedDict(InfinoCommonTypedDict):
         click.option(
             "--search-mode",
             type=click.Choice(["ivf", "hnsw_ivf"]),
-            default="ivf",
+            default="hnsw_ivf",
             help="Vector serving path, bridged to the engine config: "
-            "ivf (default) or hnsw_ivf (resident HNSW graph with ivf fallback)",
+            "hnsw_ivf (default; resident HNSW graph with ivf fallback) or ivf",
+        ),
+    ]
+    ef: Annotated[
+        int,
+        click.option(
+            "--ef",
+            type=int,
+            default=0,
+            help="Serve-time HNSW beam (search_mode=hnsw_ivf), bridged to "
+            "vector.hnsw_ef_search. 0 (default) uses the graph's stamped k->ef "
+            "curve; a positive value fixes the beam. Sweep it across runs "
+            "(one value per run) to trace the recall/latency curve without a rebuild.",
         ),
     ]
 
@@ -96,7 +108,7 @@ def Infino(**parameters: Unpack[InfinoTypedDict]):
             cache_dir=parameters["cache_dir"],
             storage_options=parameters["storage_options"] or None,
         ),
-        db_case_config=InfinoIndexConfig(search_mode=parameters["search_mode"]),
+        db_case_config=InfinoIndexConfig(search_mode=parameters["search_mode"], ef=parameters["ef"]),
         **parameters,
     )
 
