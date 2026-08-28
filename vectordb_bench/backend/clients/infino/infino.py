@@ -54,7 +54,7 @@ class Infino(VectorDB):
     # first query — the stock ladder OOM-killed a 62 GB host at conc≈30
     # on Cohere-10M). Searches are read-only over immutable snapshots, so
     # a shared connection is thread-safe.
-    in_process_concurrency: bool = True
+    in_process_concurrency: bool = False
 
     # NonFilter only (base default): Infino's native filtered ANN is an FTS-token
     # pre-filter that can't express the harness's scalar equality / range filters.
