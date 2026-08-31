@@ -1,3 +1,4 @@
+import contextlib
 import fcntl
 import json
 import logging
@@ -50,6 +51,10 @@ _FLUSH_ROWS = 100_000
 _SERVE_ENV = "INFINO_BENCH_SERVE"
 # Seconds to wait for the freshly spawned server to accept connections.
 _SERVE_START_TIMEOUT_S = 300.0
+# Per-query socket timeout: a warm query is sub-ms, so this only trips if the
+# server stalls — letting the worker fail/reconnect instead of wedging forever
+# (which would otherwise hang the phase until the harness concurrency timeout).
+_SERVE_SOCK_TIMEOUT_S = 120.0
 
 
 def _serve_enabled() -> bool:
@@ -260,11 +265,14 @@ class Infino(VectorDB):
         # per-process cost serve mode exists to avoid. The engine lives in the
         # local server; search goes over TCP (see search_embedding).
         serve_search = self._serve and self._serve_ready_path().exists()
+        # init() runs single-threaded before the runner fans out, so this is the
+        # safe place to create the lock guarding the first-search spawn. Create it
+        # for ANY serve-mode init (not only the marker-present branch): a case that
+        # searches before optimize() writes the marker still reaches _ensure_server.
+        if self._serve and self._spawn_lock is None:
+            self._spawn_lock = threading.Lock()
         if serve_search:
-            # init() runs single-threaded before the runner fans out, so this is
-            # the safe place to create the lock guarding the first-search spawn.
-            if self._spawn_lock is None:
-                self._spawn_lock = threading.Lock()
+            pass  # thin: no embedded table (see search_embedding)
         elif self._conn is None:
             # Embedded path, or serve-mode LOAD/build phase (append + optimize need
             # the embedded engine). Reuse one connection for the whole process.
@@ -500,9 +508,10 @@ class Infino(VectorDB):
         different ``vector.hnsw_ef_search``. A server left behind by a crashed beam
         would otherwise be rejoined and silently serve the *previous* beam's ef,
         corrupting the curve. Rejoin only a server whose signature matches; kill and
-        respawn otherwise.
+        respawn otherwise. Includes table + column so a server built for a different
+        table (same data_path reused) is never rejoined and asked the wrong vectors.
         """
-        return f"{self._search_mode or 'ivf'}:{self._ef or 0}"
+        return f"{self.table_name}:{_VECTOR_FIELD}:{self._search_mode or 'ivf'}:{self._ef or 0}"
 
     def _ensure_server(self) -> tuple[str, int]:
         """Start (or rejoin) the single local server and return its loopback address.
@@ -524,7 +533,7 @@ class Infino(VectorDB):
             self._apply_search_mode_config()
             lock_path = Path(self.data_path) / ".bench_serve.lock"
             state_path = Path(self.data_path) / ".bench_serve.json"
-            with open(lock_path, "w") as lf:
+            with lock_path.open("w") as lf:
                 fcntl.flock(lf, fcntl.LOCK_EX)
                 prev = self._read_server_state(state_path)
                 if prev is not None:
@@ -545,7 +554,7 @@ class Infino(VectorDB):
                 # even after it finished). start_new_session detaches it into its
                 # own session so it also survives the transient worker that spawns
                 # it under the multi-process runner.
-                serve_log = open(Path(self.data_path) / "bench_serve.log", "ab")  # noqa: SIM115
+                serve_log = (Path(self.data_path) / "bench_serve.log").open("ab")
                 proc = subprocess.Popen(
                     self._server_cmd(port),
                     env=os.environ.copy(),
@@ -592,17 +601,32 @@ class Infino(VectorDB):
             return None
 
     @staticmethod
-    def _terminate_pid(pid: int) -> None:
+    def _is_our_server(pid: int) -> bool:
+        """True only if pid is a live `infino._bench_serve` process. Guards against
+        a recorded pid that was reused by an unrelated process (state file persists
+        across runs), which matters on a long-lived shared host."""
         try:
-            os.kill(pid, signal.SIGTERM)
-        except (OSError, ProcessLookupError):
+            with Path(f"/proc/{pid}/cmdline").open("rb") as fh:
+                return b"infino._bench_serve" in fh.read()
+        except OSError:
+            return False
+
+    def _terminate_pid(self, pid: int) -> None:
+        # Only kill a process we can confirm is our bench server (see _is_our_server).
+        if not self._is_our_server(pid):
             return
-        for _ in range(50):  # up to ~5s for the port to free before respawn
-            time.sleep(0.1)
+        for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
-                os.kill(pid, 0)
+                os.kill(pid, sig)
             except OSError:
-                return
+                return  # already gone
+            for _ in range(100):  # up to ~10s to fully exit before we respawn/rebind
+                time.sleep(0.1)
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    return  # confirmed dead
+            # still alive after the wait → escalate to SIGKILL on the next loop
 
     def _wait_until_serving(self, host: str, port: int, proc: subprocess.Popen) -> None:
         deadline = time.monotonic() + _SERVE_START_TIMEOUT_S
@@ -623,10 +647,20 @@ class Infino(VectorDB):
         s = getattr(self._tls, "sock", None)
         if s is None:
             host, port = self._server_addr
-            s = socket.create_connection((host, port))
+            s = socket.create_connection((host, port), timeout=_SERVE_SOCK_TIMEOUT_S)
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self._tls.sock = s
         return s
+
+    def _drop_sock(self) -> None:
+        """Discard the cached socket so the next query reconnects. Called on any
+        socket error — otherwise a single transient drop leaves a dead socket
+        cached and every later query in this worker fails for the whole phase."""
+        s = getattr(self._tls, "sock", None) if self._tls is not None else None
+        if s is not None:
+            with contextlib.suppress(OSError):
+                s.close()
+            self._tls.sock = None
 
     @staticmethod
     def _recvall(sock: socket.socket, n: int) -> memoryview:
@@ -643,12 +677,22 @@ class Infino(VectorDB):
 
     def _search_serve(self, query: list[float], k: int) -> list[int]:
         q = np.ascontiguousarray(query, dtype=np.float32)
-        sock = self._sock()
-        sock.sendall(struct.pack("<II", k, q.shape[0]) + q.tobytes())
-        (n,) = struct.unpack("<I", self._recvall(sock, 4))
-        if n == 0:
-            return []
-        return np.frombuffer(self._recvall(sock, n * 8), dtype="<i8").tolist()
+        req = struct.pack("<II", k, q.shape[0]) + q.tobytes()
+        # One retry on a socket error: drop the (possibly dead) cached socket and
+        # reconnect once, so a transient drop doesn't crater this worker.
+        for attempt in (0, 1):
+            try:
+                sock = self._sock()
+                sock.sendall(req)
+                (n,) = struct.unpack("<I", self._recvall(sock, 4))
+                if n == 0:
+                    return []
+                return np.frombuffer(self._recvall(sock, n * 8), dtype="<i8").tolist()
+            except (OSError, ConnectionError, struct.error):
+                self._drop_sock()
+                if attempt == 1:
+                    raise
+        return []  # unreachable
 
     def search_embedding(self, query: list[float], k: int = 100, **kwargs) -> list[int]:
         if self._serve:
