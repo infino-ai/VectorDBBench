@@ -102,6 +102,7 @@ def Infino(**parameters: Unpack[InfinoTypedDict]):
     run(
         db=DBTYPE,
         db_config=InfinoConfig(
+            db_label=parameters["db_label"],
             data_path=parameters["data_path"],
             table_name=parameters["table_name"],
             cache_budget_bytes=parameters["cache_budget_bytes"],
@@ -121,6 +122,7 @@ def InfinoFTS(**parameters: Unpack[InfinoFTSTypedDict]):
     run(
         db=DBTYPE,
         db_config=InfinoConfig(
+            db_label=parameters["db_label"],
             data_path=parameters["data_path"],
             table_name=parameters["table_name"],
             cache_budget_bytes=parameters["cache_budget_bytes"],
