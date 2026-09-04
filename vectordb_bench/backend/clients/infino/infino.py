@@ -106,11 +106,28 @@ class Infino(VectorDB):
         self.name = "Infino"
         self.dim = dim
         self.data_path = db_config["data_path"]
-        # A cache budget without a cache dir is a silent no-op in the
-        # engine (no disk cache is created); default the cache next to the
-        # catalog so warm queries are actually warm.
+        # data_path is the store the engine opens: a local directory, or an
+        # object-store URI such as az://bucket/prefix or s3://bucket/prefix.
+        # The engine reads and writes the corpus there, but the client's own
+        # bookkeeping — the disk cache, the engine config file, the _id map, and
+        # serve-mode state — must live on local disk, never in the object store.
+        # Keep a local scratch dir separate from the store; for a local
+        # data_path the two are the same path, so local runs are unchanged.
+        self._remote_store = "://" in self.data_path
+        if self._remote_store:
+            cache_dir = db_config.get("cache_dir")
+            self._local = (
+                Path(cache_dir).parent
+                if cache_dir
+                else Path(tempfile.gettempdir()) / "vectordb_bench" / f"infino-{collection_name}"
+            )
+        else:
+            self._local = Path(self.data_path)
+        # A cache budget without a cache dir is a silent no-op in the engine (no
+        # disk cache is created); default the cache under the local scratch so
+        # warm queries are actually warm.
         if db_config.get("cache_budget_bytes") and not db_config.get("cache_dir"):
-            db_config = {**db_config, "cache_dir": str(Path(self.data_path) / "cache")}
+            db_config = {**db_config, "cache_dir": str(self._local / "cache")}
         # Connection tuning (cache budget, cache dir, object-store options); pass only what is set.
         self._connect_opts = {
             k: db_config[k]
@@ -163,7 +180,7 @@ class Infino(VectorDB):
         # Build the schema once so table creation and every append stay in lockstep.
         self._schema = self._build_schema()
 
-        Path(self.data_path).mkdir(parents=True, exist_ok=True)
+        Path(self._local).mkdir(parents=True, exist_ok=True)
         conn = self._connect()
         if drop_old:
             # A drop invalidates the persisted _id map: a fresh ingest reassigns
@@ -201,7 +218,7 @@ class Infino(VectorDB):
             lines.append(f"  search_mode: {mode}")
         if ef > 0:
             lines.append(f"  hnsw_ef_search: {ef}")
-        cfg_root = Path(self.data_path) / "_infino_engine_cfg"
+        cfg_root = Path(self._local) / "_infino_engine_cfg"
         (cfg_root / "infino").mkdir(parents=True, exist_ok=True)
         (cfg_root / "infino" / "config.yaml").write_text("\n".join(lines) + "\n")
         os.environ["XDG_CONFIG_HOME"] = str(cfg_root)
@@ -306,7 +323,7 @@ class Infino(VectorDB):
     # NOTHING, and a cached map is only trusted if its row count matches the
     # table — otherwise it is rebuilt in place.
     def _id_map_path(self) -> Path:
-        return Path(self.data_path) / f"{self.table_name}.idmap.npz"
+        return Path(self._local) / f"{self.table_name}.idmap.npz"
 
     def _table_row_count(self) -> int:
         res = self._conn.query_sql(f"SELECT COUNT(*) FROM {self.table_name}")
@@ -531,8 +548,8 @@ class Infino(VectorDB):
             # The child must inherit the same engine config (search_mode / ef)
             # the embedded path would have written; this sets XDG_CONFIG_HOME.
             self._apply_search_mode_config()
-            lock_path = Path(self.data_path) / ".bench_serve.lock"
-            state_path = Path(self.data_path) / ".bench_serve.json"
+            lock_path = Path(self._local) / ".bench_serve.lock"
+            state_path = Path(self._local) / ".bench_serve.json"
             with lock_path.open("w") as lf:
                 fcntl.flock(lf, fcntl.LOCK_EX)
                 prev = self._read_server_state(state_path)
@@ -554,7 +571,7 @@ class Infino(VectorDB):
                 # even after it finished). start_new_session detaches it into its
                 # own session so it also survives the transient worker that spawns
                 # it under the multi-process runner.
-                serve_log = (Path(self.data_path) / "bench_serve.log").open("ab")
+                serve_log = (Path(self._local) / "bench_serve.log").open("ab")
                 proc = subprocess.Popen(
                     self._server_cmd(port),
                     env=os.environ.copy(),
@@ -582,15 +599,15 @@ class Infino(VectorDB):
         """Marker written after the build+optimize completes; its presence tells
         serve-mode ``init()`` the search phase has begun (stay thin, use the
         server) versus the load phase (open the embedded engine to append)."""
-        return Path(self.data_path) / f"{self.table_name}.serveready"
+        return Path(self._local) / f"{self.table_name}.serveready"
 
     def _kill_recorded_server(self) -> None:
         """Terminate whatever server the state file records (used at drop_old, when
         the previous build — and any server pinned to its snapshot — is gone)."""
-        state = self._read_server_state(Path(self.data_path) / ".bench_serve.json")
+        state = self._read_server_state(Path(self._local) / ".bench_serve.json")
         if state is not None:
             self._terminate_pid(state[1])
-        (Path(self.data_path) / ".bench_serve.json").unlink(missing_ok=True)
+        (Path(self._local) / ".bench_serve.json").unlink(missing_ok=True)
 
     @staticmethod
     def _read_server_state(path: Path) -> tuple[int, int, str] | None:

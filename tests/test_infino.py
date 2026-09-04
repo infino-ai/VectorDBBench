@@ -50,6 +50,7 @@ class TestInfino:
             client._search_mode = search_mode
             client._ef = ef
             client.data_path = str(tmp_path)
+            client._local = tmp_path  # local scratch (== data_path for a local store)
             if cfg_path.exists():
                 cfg_path.unlink()
             client._apply_search_mode_config()
