@@ -66,6 +66,7 @@ class DB(Enum):
     VolcMySQL = "VolcMySQL"
     Adbpg = "AnalyticDB for PostgreSQL"
     Infino = "Infino"
+    InfinoCloud = "InfinoCloud"
 
     @property
     def init_cls(self) -> type[VectorDB]:  # noqa: PLR0911, PLR0912, C901, PLR0915
@@ -286,6 +287,11 @@ class DB(Enum):
             from .infino.infino import Infino
 
             return Infino
+
+        if self == DB.InfinoCloud:
+            from .infino_cloud.infino_cloud import InfinoCloud
+
+            return InfinoCloud
 
         msg = f"Unknown DB: {self.name}"
         raise ValueError(msg)
@@ -510,6 +516,11 @@ class DB(Enum):
 
             return InfinoConfig
 
+        if self == DB.InfinoCloud:
+            from .infino_cloud.config import InfinoCloudConfig
+
+            return InfinoCloudConfig
+
         msg = f"Unknown DB: {self.name}"
         raise ValueError(msg)
 
@@ -732,6 +743,11 @@ class DB(Enum):
             if index_type == IndexType.FTS:
                 return InfinoFTSConfig
             return InfinoIndexConfig
+
+        if self == DB.InfinoCloud:
+            from .infino_cloud.config import InfinoCloudIndexConfig
+
+            return InfinoCloudIndexConfig
 
         # DB.Pinecone, DB.Redis
         return EmptyDBCaseConfig
