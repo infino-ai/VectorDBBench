@@ -7,6 +7,7 @@ managed-service curve is comparable to the self-hosted series.
 """
 
 import logging
+import os
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -26,11 +27,16 @@ _VECTOR_FIELD = "emb"
 # drain+build+calibrate finishes), which can take many minutes at scale.
 _OPTIMIZE_TIMEOUT = 3 * 60 * 60
 _REQUEST_TIMEOUT = 600
-# The gateway rejects request bodies over 5 MiB (it drops the TLS connection
-# mid-upload). Each append is chunked to sit safely under that, computed from
-# the vector dim; the append count — hence delta-fragment count before the
-# force-optimize — is governed by this limit, not by the bench's batch size.
-_MAX_APPEND_BODY_BYTES = 4 * 1024 * 1024  # headroom under the gateway's 5 MiB
+# The gateway rejects a request body over its limit by dropping the TLS
+# connection mid-upload, so each append is chunked to sit under that limit, sized
+# from the vector dim. The append count — hence delta-fragment count before the
+# force-optimize — is governed by this budget, not by the bench's batch size.
+#
+# The default is conservative so ingest works against any deployment; raise it to
+# match a gateway with a larger limit (env INFINO_CLOUD_MAX_APPEND_MB, in MB) for
+# far fewer round trips and fewer fragments. Keep headroom under the server limit
+# for Arrow framing — e.g. a 120 MB gateway takes ~100 comfortably.
+_MAX_APPEND_BODY_BYTES = int(float(os.environ.get("INFINO_CLOUD_MAX_APPEND_MB", "4")) * 1024 * 1024)
 _APPEND_RETRIES = 8  # absorb transient WAN blips + occasional in-flight-write 409s
 # The gateway takes one write per table at a time: a concurrent write loses with
 # 409 and a still-activating worker answers 503, both transient and retryable.
