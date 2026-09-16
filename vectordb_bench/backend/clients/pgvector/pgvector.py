@@ -9,6 +9,11 @@ from typing import Any
 import numpy as np
 import psycopg
 from pgvector.psycopg import register_vector
+
+try:  # pgvector-python moved HalfVector to the package root in 0.3
+    from pgvector import HalfVector
+except ImportError:  # pragma: no cover
+    from pgvector.psycopg import HalfVector
 from psycopg import Connection, Cursor, sql
 
 from vectordb_bench.backend.filter import Filter, FilterOp
@@ -494,10 +499,10 @@ class PgVector(VectorDB):
                         for i, row in enumerate(metadata_arr):
                             if self.with_scalar_labels:
                                 copy.set_types(["bigint", "halfvec", "varchar"])
-                                copy.write_row((row, np.float16(embeddings_arr[i]), labels_data[i]))
+                                copy.write_row((row, HalfVector(embeddings_arr[i]), labels_data[i]))
                             else:
                                 copy.set_types(["bigint", "halfvec"])
-                                copy.write_row((row, np.float16(embeddings_arr[i])))
+                                copy.write_row((row, HalfVector(embeddings_arr[i])))
                     else:
                         for i, row in enumerate(metadata_arr):
                             if self.with_scalar_labels:
