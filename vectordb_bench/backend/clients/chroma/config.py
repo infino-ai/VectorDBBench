@@ -46,9 +46,13 @@ class ChromaIndexConfig(ChromaConfig, DBCaseConfig):
                 "space": self.parse_metric(),
                 "max_neighbors": self.m,
                 "ef_construction": self.ef_construct,
-                "ef_search": self.search_param().get("ef_search", 100),
+                "ef_search": self.search_param()["hnsw"]["ef_search"],
             }
         }
 
     def search_param(self) -> dict:
-        return {"ef_search": self.ef_search}
+        # optimize() hands this straight to collection.modify(configuration=...),
+        # which takes the same nested shape index_param builds. A flat dict
+        # leaves ef_search at whatever the index was created with, so a sweep
+        # over it returns the same recall at every value.
+        return {"hnsw": {"ef_search": self.ef_search}}
