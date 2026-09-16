@@ -110,7 +110,7 @@ class MariaDB(VectorDB):
 
         self.insert_sql = f"INSERT INTO {self.db_name}.{self.table_name} (id, v) VALUES (%s, %s)"
         self.select_sql = (
-            f"SELECT id FROM {self.db_name}.{self.table_name}"
+            f"SELECT id FROM {self.db_name}.{self.table_name} "
             f"ORDER by vec_distance_{search_param['metric_type']}(v, %s) LIMIT %d"
         )
         self.select_sql_with_filter = (
