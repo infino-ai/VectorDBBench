@@ -7,19 +7,19 @@ from ..api import DBCaseConfig, DBConfig, MetricType
 class ChromaConfig(DBConfig):
     user: str | None = None
     password: SecretStr | None = None
-    host: SecretStr = "localhost"
+    host: str = "localhost"
     port: int = 8000
 
     def to_dict(self) -> dict:
         config = {
-            "host": self.host.get_secret_value(),
+            "host": self.host,
             "port": self.port,
         }
         if self.password and self.user:
             config["settings"] = Settings(
                 settings=Settings(
                     chroma_client_auth_provider="chromadb.auth.token_authn.TokenAuthClientProvider",
-                    chroma_client_auth_credentials=f"{self.user}:{self.password}",
+                    chroma_client_auth_credentials=f"{self.user}:{self.password.get_secret_value()}",
                 )
             )
         return config
