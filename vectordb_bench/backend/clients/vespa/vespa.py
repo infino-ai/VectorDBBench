@@ -375,7 +375,17 @@ class Vespa(VectorDB):
 
         ranking = self.case_config.quantization_type
 
-        result = self.client.query({"yql": yql, "input.query(query_embedding)": query_embedding, "ranking": ranking})
+        # Without hits, Vespa returns its default 10 regardless of targetHits,
+        # so a k of 100 can never score above 0.1. search_documents below sets
+        # it; this path did not.
+        result = self.client.query(
+            {
+                "yql": yql,
+                "input.query(query_embedding)": query_embedding,
+                "ranking": ranking,
+                "hits": k,
+            }
+        )
         return [child["fields"]["id"] for child in result.get_json()["root"]["children"]]
 
     def search_documents(
