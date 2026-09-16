@@ -233,16 +233,20 @@ class OSSOpenSearchIndexConfig(BaseModel, DBCaseConfig):
 
         # Add encoder for in-memory quantization
         if self.use_quant:
-            encoder_config = {"name": "sq"}
+            # OpenSearch 3.6 and later reject an sq encoder that does not carry
+            # bits: "Parameter [bits] is required for encoder [sq]". fp16 is 16.
+            encoder_config = {"name": "sq", "parameters": {"bits": 16}}
 
             if self.quantization_type == OSSOpenSearchQuantization.LUCENE_SQ:
                 # Lucene SQ: optional confidence_interval
                 if self.confidence_interval is not None:
-                    encoder_config["parameters"] = {"confidence_interval": self.confidence_interval}
+                    encoder_config["parameters"]["confidence_interval"] = self.confidence_interval
 
-            elif self.quantization_type == OSSOpenSearchQuantization.FAISS_SQFP16 and self.clip:
+            elif self.quantization_type == OSSOpenSearchQuantization.FAISS_SQFP16:
                 # FAISS SQfp16: optional clip parameter
-                encoder_config["parameters"] = {"type": "fp16", "clip": True}
+                encoder_config["parameters"]["type"] = "fp16"
+                if self.clip:
+                    encoder_config["parameters"]["clip"] = True
 
             method_config["parameters"]["encoder"] = encoder_config
 
