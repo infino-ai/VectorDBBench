@@ -557,6 +557,29 @@ class Vespa(VectorDB):
                 )
             )
 
+        # An empty first phase inherits nativeRank from the default profile,
+        # which scores a pure nearestNeighbor query the same for every hit and
+        # leaves the result order unrelated to distance. Each profile scores by
+        # closeness on the field it searches, and the binary profile is only
+        # declared when that field is in the schema.
+        rank_profiles = [
+            RankProfile(
+                name="none",
+                first_phase="closeness(field, embedding)",
+                inherits="default",
+                inputs=[("query(query_embedding)", f"tensor<float>(x[{self.dim}])")],
+            ),
+        ]
+        if self.case_config.quantization_type == "binary":
+            rank_profiles.append(
+                RankProfile(
+                    name="binary",
+                    first_phase="closeness(field, embedding_binary)",
+                    inherits="default",
+                    inputs=[("query(query_embedding)", f"tensor<int8>(x[{math.ceil(self.dim / 8)}])")],
+                )
+            )
+
         return ApplicationPackage(
             "vectordbbench",
             [
@@ -565,20 +588,7 @@ class Vespa(VectorDB):
                     Document(
                         fields,
                     ),
-                    rank_profiles=[
-                        RankProfile(
-                            name="none",
-                            first_phase="",
-                            inherits="default",
-                            inputs=[("query(query_embedding)", f"tensor<float>(x[{self.dim}])")],
-                        ),
-                        RankProfile(
-                            name="binary",
-                            first_phase="",
-                            inherits="default",
-                            inputs=[("query(query_embedding)", f"tensor<int8>(x[{math.ceil(self.dim / 8)}])")],
-                        ),
-                    ],
+                    rank_profiles=rank_profiles,
                 )
             ],
             validations=[
