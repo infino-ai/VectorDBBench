@@ -17,6 +17,7 @@ from ..backend.clients.elastic_cloud.cli import (
 )
 from ..backend.clients.endee.cli import Endee
 from ..backend.clients.hologres.cli import HologresHGraph
+from ..backend.clients.infino.cli import Infino, InfinoFTS
 from ..backend.clients.lancedb.cli import (
     LanceDB,
     LanceDBAutoIndex,
@@ -45,6 +46,7 @@ from ..backend.clients.qdrant_cloud.cli import QdrantCloud
 from ..backend.clients.qdrant_local.cli import QdrantLocal
 from ..backend.clients.redis.cli import Redis
 from ..backend.clients.s3_vectors.cli import S3Vectors
+from ..backend.clients.infino_cloud.cli import InfinoCloud
 from ..backend.clients.seekdb.cli import SeekDBHNSW
 from ..backend.clients.tencent_elasticsearch.cli import TencentElasticsearch
 from ..backend.clients.test.cli import Test
@@ -105,6 +107,8 @@ cli.add_command(TurboPufferUnpin)
 cli.add_command(Chroma)
 cli.add_command(Zvec)
 cli.add_command(Endee)
+cli.add_command(Infino)
+cli.add_command(InfinoFTS)
 cli.add_command(LindormIVFPQ)
 cli.add_command(LindormHNSW)
 cli.add_command(LindormIVFBQ)
@@ -117,6 +121,7 @@ cli.add_command(PolarDBHNSWPQ)
 cli.add_command(PolarDBHNSWSQ)
 cli.add_command(SeekDBHNSW)
 cli.add_command(VolcMySQLHNSW)
+cli.add_command(InfinoCloud)
 
 
 if __name__ == "__main__":

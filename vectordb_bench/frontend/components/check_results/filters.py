@@ -50,10 +50,15 @@ def getshownResults(
         # label_visibility="hidden",
         default=default_selected_task_labels or resultSelectOptions,
     )
+    # Select every TestResult whose label is chosen, not just the first: more
+    # than one TestResult can share a task_label (e.g. a shared "standard_*"
+    # label across engines run separately), and index() would return only the
+    # first, silently dropping the rest.
+    selected = set(selectedResultSelectedOptions)
     selectedResult: list[CaseResult] = []
-    for option in selectedResultSelectedOptions:
-        case_results = results[resultSelectOptions.index(option)].results
-        selectedResult += [r for r in case_results if case_results_filter(r)]
+    for option, result in zip(resultSelectOptions, results):
+        if option in selected:
+            selectedResult += [r for r in result.results if case_results_filter(r)]
 
     return selectedResult
 

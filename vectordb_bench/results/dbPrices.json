@@ -1,4 +1,7 @@
 {
+  "Infino": {
+    "Standard_D16s_v7": 1.058
+  },
   "Milvus": {},
   "ZillizCloud": {
     "1cu-perf": 0.159,
