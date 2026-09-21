@@ -1,6 +1,7 @@
 """Wrapper around the Weaviate vector database over VectorDB"""
 
 import logging
+import threading
 from collections.abc import Iterable
 from contextlib import contextmanager
 
@@ -37,6 +38,14 @@ class WeaviateCloud(VectorDB):
         self._scalar_field = "key"
         self._vector_field = "vector"
         self._index_name = "vector_idx"
+
+        # One weaviate.Client is shared by the loader's worker threads, and
+        # client.batch is a single object on it. Leaving that context manager
+        # flushes and shuts down the batch's executor, so a thread still inside
+        # it submits to a dead one and raises RuntimeError: cannot schedule new
+        # futures after shutdown. WeaviateBaseError below does not catch a
+        # RuntimeError, so it takes the whole load with it.
+        self._batch_lock = threading.Lock()
 
         # If local setup is used, we
         if db_config["no_auth"]:
@@ -109,7 +118,7 @@ class WeaviateCloud(VectorDB):
         assert self.client.schema.exists(self.collection_name)
         insert_count = 0
         try:
-            with self.client.batch as batch:
+            with self._batch_lock, self.client.batch as batch:
                 batch.batch_size = len(metadata)
                 batch.dynamic = True
                 res = []
