@@ -12,6 +12,12 @@ from ..api import DBCaseConfig, VectorDB
 
 log = logging.getLogger(__name__)
 
+# The loader ships the runner, and with it this client, to a spawned process, so
+# a lock stored on the instance fails with "cannot pickle '_thread.lock'". A
+# module-level lock is re-created by the import in the child and shared by that
+# process's worker threads, which is the scope the batch needs.
+_BATCH_LOCK = threading.Lock()
+
 
 class WeaviateCloud(VectorDB):
     def __init__(
@@ -39,13 +45,6 @@ class WeaviateCloud(VectorDB):
         self._vector_field = "vector"
         self._index_name = "vector_idx"
 
-        # One weaviate.Client is shared by the loader's worker threads, and
-        # client.batch is a single object on it. Leaving that context manager
-        # flushes and shuts down the batch's executor, so a thread still inside
-        # it submits to a dead one and raises RuntimeError: cannot schedule new
-        # futures after shutdown. WeaviateBaseError below does not catch a
-        # RuntimeError, so it takes the whole load with it.
-        self._batch_lock = threading.Lock()
 
         # If local setup is used, we
         if db_config["no_auth"]:
@@ -118,7 +117,10 @@ class WeaviateCloud(VectorDB):
         assert self.client.schema.exists(self.collection_name)
         insert_count = 0
         try:
-            with self._batch_lock, self.client.batch as batch:
+            # client.batch is one object on a client shared by the loader's
+            # four threads, and leaving the context flushes it and shuts down
+            # its executor, so a thread still inside submits to a dead one.
+            with _BATCH_LOCK, self.client.batch as batch:
                 batch.batch_size = len(metadata)
                 batch.dynamic = True
                 res = []
