@@ -22,14 +22,18 @@ class PgVectorRSConfigDict(TypedDict):
 
 
 class PgVectoRSConfig(DBConfig):
-    user_name: str = "postgres"
+    # The CLI hands this a SecretStr, so a plain str annotation fails
+    # validation and no pgvecto.rs command can build its config at all.
+    # pgvector declares the same field as SecretStr and unwraps it below.
+    user_name: SecretStr = "postgres"
     password: SecretStr
     host: str = "localhost"
     port: int = 5432
     db_name: str
 
     def to_dict(self) -> dict:
-        user_str = self.user_name
+        user_str = (self.user_name.get_secret_value()
+                    if isinstance(self.user_name, SecretStr) else self.user_name)
         pwd_str = self.password.get_secret_value()
         return {
             "host": self.host,
