@@ -1,3 +1,5 @@
+import os
+
 from pydantic import BaseModel, SecretStr
 
 from ..api import DBCaseConfig, DBConfig, MetricType
@@ -38,6 +40,13 @@ class WeaviateIndexConfig(BaseModel, DBCaseConfig):
             }
         else:
             params = {"distance": self.parse_metric()}
+        # Weaviate keeps vectors in an in-memory cache whose default ceiling is
+        # effectively unbounded, so a corpus larger than the machine drives the
+        # host into swap instead of paging the cache. Capping the object count
+        # is a memory setting, not a different index.
+        cap = os.environ.get("VDB_WEAVIATE_VECTOR_CACHE")
+        if cap:
+            params["vectorCacheMaxObjects"] = int(cap)
         return params
 
     def search_param(self) -> dict:

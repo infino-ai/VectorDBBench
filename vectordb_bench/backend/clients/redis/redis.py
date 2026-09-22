@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import contextmanager
 from typing import Any
 
@@ -60,7 +61,14 @@ class Redis(VectorDB):
                     "vector",  # Vector Field Name
                     "HNSW",  # Vector Index Type: FLAT or HNSW
                     {
-                        "TYPE": "FLOAT32",  # FLOAT32 or FLOAT64
+                        # RediSearch has accepted FLOAT16 and BFLOAT16 since
+                        # 2.10, and this client offers only FLOAT32. At 10M by
+                        # 768 that needs about twice the corpus resident,
+                        # because the hash field and the HNSW index each keep a
+                        # copy, and the kernel kills the server. Selectable so a
+                        # corpus that does not fit at FLOAT32 can still be
+                        # measured, with the row disclosing the precision.
+                        "TYPE": os.environ.get("VDB_REDIS_VECTOR_TYPE", "FLOAT32"),
                         "DIM": vector_dimensions,  # Number of Vector Dimensions
                         "DISTANCE_METRIC": "COSINE",  # Vector Search Distance Metric
                         "M": self.case_config.index_param()["params"]["M"],
