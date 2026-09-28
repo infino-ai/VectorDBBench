@@ -31,7 +31,10 @@ class OSSOpenSearchConfig(DBConfig, BaseModel):
             "hosts": [{"host": self.host, "port": self.port}],
             "http_auth": http_auth,
             "use_ssl": use_ssl,
-            "http_compress": True,
+            # Parity with the Elasticsearch client, which runs uncompressed on a
+            # plain-host connection (elasticsearch-py default). gzip on a loopback
+            # connection is pure CPU with no wire benefit.
+            "http_compress": False,
             "verify_certs": use_ssl,
             "ssl_assert_hostname": False,
             "ssl_show_warn": False,

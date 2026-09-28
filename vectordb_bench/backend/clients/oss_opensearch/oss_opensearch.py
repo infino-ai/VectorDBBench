@@ -176,9 +176,14 @@ class SearchQueryBuilder:
 
         if id_col_name == "_id":
             search_kwargs["stored_fields"] = "_id"
+            # Return only the id in the response body, as the Elasticsearch client
+            # does. VectorDBBench uses only the ids (for recall); the rest of the
+            # envelope is serialized and discarded.
+            search_kwargs["filter_path"] = ["hits.hits._id"]
         else:
             search_kwargs["docvalue_fields"] = [id_col_name]
             search_kwargs["stored_fields"] = "_none_"
+            search_kwargs["filter_path"] = [f"hits.hits.fields.{id_col_name}"]
 
         return search_kwargs
 
@@ -672,9 +677,9 @@ class OSSOpenSearch(VectorDB):
             )
             response = self.client.search(**search_kwargs)
 
-            log.debug(f"Search took: {response['took']}")
-            log.debug(f"Search shards: {response['_shards']}")
-            log.debug(f"Search hits total: {response['hits']['total']}")
+            # filter_path (set in build_search_kwargs for parity with the ES client)
+            # strips the top-level took/_shards/total fields, so read them defensively.
+            log.debug(f"Search took: {response.get('took')}")
             try:
                 if self.id_col_name == "_id":
                     # Get _id directly from hit metadata
