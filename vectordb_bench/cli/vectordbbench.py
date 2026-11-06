@@ -53,6 +53,7 @@ from ..backend.clients.turbopuffer.cli import TurboPuffer, TurboPufferUnpin
 from ..backend.clients.vectorchord.cli import VectorChordGraph, VectorChordRQ
 from ..backend.clients.vespa.cli import Vespa
 from ..backend.clients.volc_mysql.cli import VolcMySQLHNSW
+from ..backend.clients.warm.cli import Warm
 from ..backend.clients.weaviate_cloud.cli import Weaviate
 from ..backend.clients.zilliz_cloud.cli import ZillizAutoIndex
 from ..backend.clients.zvec.cli import Zvec
@@ -104,6 +105,7 @@ cli.add_command(TurboPuffer)
 cli.add_command(TurboPufferUnpin)
 cli.add_command(Chroma)
 cli.add_command(Zvec)
+cli.add_command(Warm)
 cli.add_command(Endee)
 cli.add_command(LindormIVFPQ)
 cli.add_command(LindormHNSW)
